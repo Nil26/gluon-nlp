@@ -315,11 +315,21 @@ def export(prefix):
         mx.library.load(libpath)
         sym, arg_params, aux_params = mx.model.load_checkpoint(prefix, 0)
 
+        digraph=mx.viz.plot_network(sym, save_format = 'pdf',
+            node_attrs={"shape":'rect',"fixedsize":'false'},
+            hide_weights=False)
+        digraph.save("sym.gv")
+
         arg_array = arg_params
         arg_array['data0'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
         arg_array['data1'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
         arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
         custom_sym = sym.optimize_for('custom_pass', arg_array, aux_params)
+
+        digraph=mx.viz.plot_network(custom_sym, save_format = 'pdf',
+            node_attrs={"shape":'rect',"fixedsize":'false'},
+            hide_weights=False)
+        digraph.save("custom_sym.gv")
 
         nheads = 12
         if args.bert_model == 'bert_24_1024_16':
@@ -685,7 +695,7 @@ def infer(prefix, task):
             mx.nd.waitall()
             toc = time.time()
             log.info('Segment {}'.format(segment))
-            log.info('BatchSize={}, NumberIterations={}:  '.format(test_batch_size, total_iters))
+            log.info('BatchSize={}, NumberIterations={}, TotalSamples={}:  '.format(test_batch_size, total_iters, total_samples))
             log.info('Throughput={:.2f} samples/s, Average Latency={:.4f} ms'
                      .format(total_samples / (toc - tic),
                              (total_latency_time / total_iters) * 1000))

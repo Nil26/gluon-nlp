@@ -40,11 +40,30 @@ class BertLayerCollector:
         """Callback function for collecting min and max values from an NDArray."""
         name = py_str(name)
         if self.include_layer is not None and not self.include_layer(name):
+            #print("===============")
+            #print(name)
+            #print("===============")
             return
+        #if name == "bertencoder0_reshape0_output" or \ 
+        #    name == "zeros_like_Reshape_output" or \
+        #    name == "bertencoder0_broadcast_add0_output":
+        #    return
+        
+        #print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+        
         handle = ctypes.cast(arr, NDArrayHandle)
         arr = NDArray(handle, writable=False)
+
+        print("!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(name)
+
+        #try:
         min_range = ndarray.min(arr).asscalar()
         max_range = ndarray.max(arr).asscalar()
+        #except:
+        #    print("!!!!!!!!!!!!!!!!!!!!!!!!")
+        #    print(name)
+        #    return
         if name.find('gelu0_leakyrelu0') != -1 and max_range > self.clip_max:
             max_range = self.clip_max
         if name.find('layernorm0_layernorm0') != -1 and min_range < self.clip_min:
@@ -55,6 +74,10 @@ class BertLayerCollector:
                                        max(cur_min_max[1], max_range))
         else:
             self.min_max_dict[name] = (min_range, max_range)
+        #print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+        #print(self.min_max_dict)
+        #print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         if self.logger is not None:
             self.logger.info('Collecting layer %s min_range=%f, max_range=%f'
                              % (name, min_range, max_range))
+        print("OK")

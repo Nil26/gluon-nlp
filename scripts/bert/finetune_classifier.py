@@ -423,8 +423,8 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
     """calibration function on the dev dataset."""
     assert len(dev_data_list) == 1, \
         'Currectly, MNLI not supported.'
-    assert ctx == mx.cpu(), \
-        'Currently only supports CPU with MKL-DNN backend.'
+    #assert ctx == mx.cpu(), \
+    #    'Currently only supports CPU with MKL-DNN backend.'
     logging.info('Now we are doing calibration on dev with %s.', ctx)
     for _, dev_data in dev_data_list:
         collector = BertLayerCollector(clip_min=-50, clip_max=10, logger=logging)
@@ -432,7 +432,8 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
         net = mx.contrib.quantization.quantize_net_v2(net, quantized_dtype=quantized_dtype,
                                                       exclude_layers=[],
                                                       quantize_mode='smart',
-                                                      quantize_granularity='channel-wise',
+                                                      #quantize_granularity='channel-wise',
+                                                      quantize_granularity='tensor-wise',
                                                       calib_data=dev_data,
                                                       calib_mode=calib_mode,
                                                       num_calib_examples=num_calib_examples,
