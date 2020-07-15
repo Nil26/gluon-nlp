@@ -41,6 +41,8 @@ import os
 import io
 import time
 
+import numpy as np
+
 import mxnet as mx
 import gluonnlp as nlp
 from gluonnlp.model import get_model, BERTClassifier
@@ -549,7 +551,11 @@ def infer(prefix, task):
                                                    ctx=ctx)
     imported_net.hybridize(static_alloc=True, static_shape=True)
     if dtype == 'float16':
-        imported_net.cast('float16')
+        #imported_net.cast('float16')
+        for _, param in imported_net.params.items():
+            if("quantize" not in param.name):
+                param.cast('float16')
+
     tokenizer = nlp.data.BERTTokenizer(vocab=vocab, lower=do_lower_case)
 
     num_warmup = 2

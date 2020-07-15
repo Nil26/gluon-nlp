@@ -185,6 +185,11 @@ if __name__ == '__main__':
                         choices=['none', 'naive', 'entropy', 'customize'],
                         help='calibration mode used for generating calibration table '
                              'for the quantized symbol.')
+    parser.add_argument('--custom_pass',
+                        type=str,
+                        default=None,
+                        help='Specify a custom graph pass for the network (library),'
+                        'allowing to customize the graph')
 
     args = parser.parse_args()
 
@@ -419,6 +424,53 @@ if __name__ == '__main__':
     train_data, dev_data_list, test_data_list, num_train_examples = preprocess_data(
         bert_tokenizer, task, batch_size, dev_batch_size, args.max_len, vocabulary)
 
+def _custompass_before_quantization(sym, arg_params, aux_params):
+    """ add custom pass to the graph before quantization """
+    
+    seq_length = args.max_len
+    test_batch_size = args.dev_batch_size
+
+    arg_array = arg_params
+    arg_array['data0'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data1'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
+    custom_sym = sym.optimize_for('pass_bef_quantization', arg_array, aux_params)
+
+    nheads = 12
+    if args.bert_model == 'bert_24_1024_16':
+        nheads = 24
+    for i in range(nheads):
+        basename = 'bertencoder0_transformer' + str(i) + '_dotproductselfattentioncell0'
+        arg_array.pop(basename + '_query_weight')
+        arg_array.pop(basename + '_key_weight')
+        arg_array.pop(basename + '_value_weight')
+        arg_array.pop(basename + '_query_bias')
+        arg_array.pop(basename + '_key_bias')
+        arg_array.pop(basename + '_value_bias')
+    arg_array.pop('data0')
+    arg_array.pop('data1')
+    arg_array.pop('data2')
+
+    return custom_sym, arg_array, aux_params
+
+def _custompass_aft_quantization(sym, arg_params, aux_params):
+    """ add custom pass to the graph after quantization """
+
+    seq_length = args.max_len
+    test_batch_size = args.dev_batch_size
+
+    arg_array = arg_params
+    arg_array['data0'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data1'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
+    custom_sym = sym.optimize_for('pass_aft_quantization', arg_array, aux_params)
+
+    arg_array.pop('data0')
+    arg_array.pop('data1')
+    arg_array.pop('data2')
+
+    return custom_sym, arg_array, aux_params
+
 def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mode):
     """calibration function on the dev dataset."""
     assert len(dev_data_list) == 1, \
@@ -426,9 +478,25 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
     #assert ctx == mx.cpu(), \
     #    'Currently only supports CPU with MKL-DNN backend.'
     logging.info('Now we are doing calibration on dev with %s.', ctx)
+
+    if args.custom_pass:
+        # load library
+        libpath = os.path.abspath(args.custom_pass)
+        mx.library.load(libpath)
+
+    if ctx==mx.gpu(args.gpu):
+        print("Disable MKLDNN when doing GPU quantization")
+        os.environ["MXNET_MKLDNN_ENABLED"]="0"
+
     for _, dev_data in dev_data_list:
         collector = BertLayerCollector(clip_min=-50, clip_max=10, logger=logging)
         num_calib_examples = dev_batch_size * num_calib_batches
+        # add custom pass before entering calibration
+        custom_pass_pre_quant = None
+        custom_pass_aft_quant = None
+        if args.custom_pass is not None:
+            custom_pass_pre_quant = _custompass_before_quantization
+            custom_pass_aft_quant = _custompass_aft_quantization
         net = mx.contrib.quantization.quantize_net_v2(net, quantized_dtype=quantized_dtype,
                                                       exclude_layers=[],
                                                       quantize_mode='smart',
@@ -439,12 +507,17 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
                                                       num_calib_examples=num_calib_examples,
                                                       ctx=ctx,
                                                       LayerOutputCollector=collector,
-                                                      logger=logging)
+                                                      logger=logging,
+                                                      custom_pass_bef_quant=custom_pass_pre_quant,
+                                                      custom_pass_aft_quant=custom_pass_aft_quant)
         # save params
         ckpt_name = 'model_bert_{0}_quantized_{1}'.format(task_name, calib_mode)
         params_saved = os.path.join(output_dir, ckpt_name)
         net.export(params_saved, epoch=0)
         logging.info('Saving quantized model at %s', output_dir)
+
+    if ctx==mx.gpu(args.gpu):
+        del os.environ["MXNET_MKLDNN_ENABLED"]
 
 
 def test(loader_test, segment):
