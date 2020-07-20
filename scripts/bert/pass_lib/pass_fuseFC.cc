@@ -261,69 +261,6 @@ MXReturnValue pass_bef_quantization(const std::string& in_graph, const std::stri
   //convert graph from JSON string to Graph/Node data structure
   Graph g = Graph::fromString(in_graph);
   //g.print();
-  
-  /////////////////////// AddBias + GELU //////////////////////////
-  std::string str_ffn1 = "ffn_1_fwd";
-  for(Node* n : g.nodes){
-      if (n->name.find(str_ffn1) != std::string::npos) {
-          Node* node_ffn1_fwd = n;
-          Node* node_ffn1_bias = node_ffn1_fwd->inputs[2].node;
-          Node* node_gelu = node_ffn1_fwd->outputs[0].node;
-          
-          std::size_t pos = n->name.find("fwd");
-          std::string base_name = n->name.substr(0,pos-1);
-          
-          // remove Bias terms in FC
-          node_ffn1_fwd->attrs["no_bias"]="True";
-          node_ffn1_fwd->inputs.pop_back();
-          
-          // create 2 expand_dims nodes to expand bias dimensions
-          Node* node_expand_1_bias = new Node();
-          node_expand_1_bias->name = base_name + "_expand_1_bias";
-          node_expand_1_bias->op = "expand_dims";
-          node_expand_1_bias->attrs["axis"]="0";
-          node_expand_1_bias->inputs.resize(1);
-          node_expand_1_bias->inputs[0].node = node_ffn1_bias;
-          node_expand_1_bias->inputs[0].entry = 0;
-          Node* node_expand_2_bias = new Node();
-          node_expand_2_bias->name = base_name + "_expand_2_bias";
-          node_expand_2_bias->op = "expand_dims";
-          node_expand_2_bias->attrs["axis"]="0";
-          node_expand_2_bias->inputs.resize(1);
-          node_expand_2_bias->inputs[0].node = node_expand_1_bias;
-          node_expand_2_bias->inputs[0].entry = 0;
-          g.nodes.push_back(node_expand_1_bias);
-          g.nodes.push_back(node_expand_2_bias);
-          
-          // create broadcast_like node
-          Node* node_bcst_like = new Node();
-          node_bcst_like->name = base_name + "_broadcast_like";
-          node_bcst_like->op = "broadcast_like";;
-          node_bcst_like->inputs.resize(2);
-          node_bcst_like->inputs[0].node = node_expand_2_bias;
-          node_bcst_like->inputs[0].entry = 0;
-          node_bcst_like->inputs[1].node = node_ffn1_fwd;
-          node_bcst_like->inputs[1].entry = 0;
-          g.nodes.push_back(node_bcst_like);
-          
-          // create BiasAdd Node
-          Node* node_add_bias = new Node();
-          node_add_bias->name = base_name + "_add_bias";
-          node_add_bias->op = "elemwise_add";
-          node_add_bias->inputs.resize(2);
-          node_add_bias->inputs[0].node = node_ffn1_fwd;
-          node_add_bias->inputs[0].entry = 0;
-          node_add_bias->inputs[1].node = node_bcst_like;
-          node_add_bias->inputs[1].entry = 0;
-          g.nodes.push_back(node_add_bias);
-          
-          //set BiasAdd node as gelu input
-          node_gelu->inputs[0].node = node_add_bias;
-          node_gelu->inputs[0].entry = 0;
-      }    
-  }
-  /////////////////////////////////////////////////////////////////
-
 
   //////////////// MHA remove reshapes & concat ///////////////////
   // find shape of weight / bias, number of heads, and count number of MHA layers
@@ -449,8 +386,9 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
   //convert graph from JSON string to Graph/Node data structure
   Graph g = Graph::fromString(in_graph);
   //g.print();
-  
-  /////////////////////// Find all the requantize nodes with connected dequantize nodes //////////////////////////
+   
+  /////////////////////// Fuse quantized_fc, requantize and dequantize to have fp16 output //////////////////////////
+  // Find all the quantized_fc nodes connected with requantize and dequantize nodes
   std::string str_requantize = "requantize";
   std::string str_dequantize = "dequantize";
   std::string str_quantizedFC_op = "_contrib_quantized_fully_connected";
@@ -517,6 +455,56 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
         }
       }
   }
+  /////////////////////////////////////////////////////////////////
+
+  //////////////// Fuse the quantized_fc + GELU + quantize_v2 into one node between ffn1 and ffn2 ///////////////////
+  //std::string str_quantizedFC_op = "_contrib_quantized_fully_connected";
+  std::string str_GELU_op = "LeakyReLU";
+  std::string str_quantize_op = "_contrib_quantize_v2";
+  for(Node* n : g.nodes){
+    if(n->op.find(str_quantizedFC_op) != std::string::npos){
+      Node* node_quantizedFC = n;
+      Node* node_GELU = n->outputs[0].node;
+      Node* node_quantize = node_GELU->outputs[0].node;
+      if(node_GELU->op.find(str_GELU_op) != std::string::npos &&
+          node_quantize->op.find(str_quantize_op) != std::string::npos){
+
+            // printf("FOUND!!!\n");
+            // std::cout<< node_quantizedFC->name << std::endl;
+            // std::cout<< node_GELU->name << std::endl;
+            // std::cout<< node_quantize->name << std::endl;
+
+            assert(node_quantizedFC->outputs.size()==1);
+            assert(node_GELU->inputs.size()==1);
+            assert(node_GELU->outputs.size()==1);
+            assert(node_quantize->inputs.size()==1);
+            assert(node_quantize->outputs.size()==3);
+
+            Node* node_ffn2 = node_quantize->outputs[0].node;
+            assert(node_ffn2->inputs.size()==9);
+
+            // subsitute node_quantizedFC to become the new fused node
+            node_quantizedFC->outputs.clear();
+            node_quantizedFC->op = "_contrib_quantized_bert_ffn1_to_ffn2_fusion";
+            node_quantizedFC->attrs.erase("float_out");
+            node_quantizedFC->attrs.erase("no_bias");
+            node_quantizedFC->attrs["min_calib_range"]=node_quantize->attrs["min_calib_range"];
+            node_quantizedFC->attrs["max_calib_range"]=node_quantize->attrs["max_calib_range"];
+
+            // subsitute node_quantizedFC to connect to node_ffn2
+            auto outentry0 = node_quantize->outputs[0];
+            auto outentry1 = node_quantize->outputs[1];
+            auto outentry2 = node_quantize->outputs[2];
+            node_quantizedFC->outputs.push_back(outentry0);
+            node_quantizedFC->outputs.push_back(outentry1);
+            node_quantizedFC->outputs.push_back(outentry2);
+            node_ffn2->inputs[0].node = node_quantizedFC; // data
+            node_ffn2->inputs[3].node = node_quantizedFC; // data_min
+            node_ffn2->inputs[4].node = node_quantizedFC; // data_out
+      }
+    }
+  }
+
   /////////////////////////////////////////////////////////////////
   
   //gout.print();
