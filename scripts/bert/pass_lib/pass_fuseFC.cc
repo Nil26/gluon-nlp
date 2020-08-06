@@ -458,7 +458,6 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
   /////////////////////////////////////////////////////////////////
 
   //////////////// Fuse the quantized_fc + GELU + quantize_v2 into one node between ffn1 and ffn2 ///////////////////
-  //std::string str_quantizedFC_op = "_contrib_quantized_fully_connected";
   std::string str_GELU_op = "LeakyReLU";
   std::string str_quantize_op = "_contrib_quantize_v2";
   for(Node* n : g.nodes){
@@ -468,11 +467,6 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
       Node* node_quantize = node_GELU->outputs[0].node;
       if(node_GELU->op.find(str_GELU_op) != std::string::npos &&
           node_quantize->op.find(str_quantize_op) != std::string::npos){
-
-            // printf("FOUND!!!\n");
-            // std::cout<< node_quantizedFC->name << std::endl;
-            // std::cout<< node_GELU->name << std::endl;
-            // std::cout<< node_quantize->name << std::endl;
 
             assert(node_quantizedFC->outputs.size()==1);
             assert(node_GELU->inputs.size()==1);
@@ -501,6 +495,85 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
             node_ffn2->inputs[0].node = node_quantizedFC; // data
             node_ffn2->inputs[3].node = node_quantizedFC; // data_min
             node_ffn2->inputs[4].node = node_quantizedFC; // data_out
+      }
+    }
+  }
+
+  /////////////////////////////////////////////////////////////////
+
+  //////////////// Get rid of Dropout nodes ///////////////////
+  // Dropout nodes are abandoned including: 
+  //      (1) those in between quantized_fc and elemwise_add;
+  //      (2) those in between softmax and interleaved_matmul
+  std::string str_dropout_op = "Dropout";
+  std::string str_elemwise_add_op = "elemwise_add";
+  std::string str_softmax_op = "softmax";
+  for(Node* n : g.nodes){
+    if(n->op.find(str_dropout_op) != std::string::npos){
+      Node* node_dropout = n;
+      Node* node_input = node_dropout->inputs[0].node;
+      Node* node_output = node_dropout->outputs[0].node;
+      if(node_input->op.find(str_quantizedFC_op) != std::string::npos){
+        Node* node_quantizedFC = node_input;
+        Node* node_elemwise_add = node_output;
+        node_quantizedFC->outputs[0].node = node_elemwise_add;
+        node_elemwise_add->inputs[0].node = node_quantizedFC;
+      }
+      if(node_input->op.find(str_softmax_op) != std::string::npos){
+        Node* node_softmax = node_input;
+        Node* node_interleaved_matmul = node_output;
+        node_softmax->outputs[0].node = node_interleaved_matmul;
+        node_interleaved_matmul->inputs[1].node = node_softmax;
+      }
+    }
+  }
+
+  /////////////////////////////////////////////////////////////////
+
+  //////////////// Fuse the quantized_fc + elemwise_add into one node ///////////////////
+  // there is a Dropout node between quantized_fc and elemwise_add (already picked out with the previous part)
+  for(Node* n : g.nodes){
+    if(n->op.find(str_quantizedFC_op) != std::string::npos){
+      Node* node_quantizedFC = n;
+      Node* node_elemwise_add = node_quantizedFC->outputs[0].node;
+      if(node_elemwise_add->op.find(str_elemwise_add_op) != std::string::npos){
+
+        printf("FOUND!!!\n");
+        std::cout<< node_quantizedFC->name << std::endl;
+        std::cout<< node_elemwise_add->name << std::endl;
+        // printf("elemwise add inputs:\n");
+        // std::cout<< node_elemwise_add->inputs[0].node->name << std::endl; //quantized_FC
+        // std::cout<< node_elemwise_add->inputs[1].node->name << std::endl; // layernorm
+        // the output of quantized_FC here (out prof and ffn2) even doesn't need out_min and out_max, only needs output results
+
+        // subsitute node_quantizedFC to become the new fused node
+        node_quantizedFC->outputs.clear();
+        node_quantizedFC->op = "_contrib_quantized_fc_elemadd_fusion";
+        node_quantizedFC->attrs.erase("float_out");
+        node_quantizedFC->attrs.erase("no_bias");
+        // here determines the float type of the whole pipeline
+        node_quantizedFC->attrs["float_pipeline"]="float16";
+
+        // add the previous layernorm as an additional input into node_quantizedFC
+        Node* node_layernorm_previous = node_elemwise_add->inputs[1].node;
+        printf("previous layernorm outputs:\n");
+        std::cout<< node_layernorm_previous->outputs[0].node->name << std::endl; // out_quantize
+        std::cout<< node_layernorm_previous->outputs[1].node->name << std::endl; // elemwise_add
+        node_layernorm_previous->outputs[1].node = node_quantizedFC;
+        auto entry_previous_layernorm = node_elemwise_add->inputs[1];
+        node_quantizedFC->inputs.push_back(entry_previous_layernorm);
+
+        // make node_quantizedFC connect to the initial output of node_elemwise_add (named as node_out, actually is the next layernorm)
+        auto outentry = node_elemwise_add->outputs[0];
+        Node* node_out = outentry.node;
+        // printf("elemwise add outputs' input:\n");
+        // std::cout<< node_out->inputs[0].node->name << std::endl; //elemwise_add
+        // std::cout<< node_out->inputs[1].node->name << std::endl; // gamma
+        // std::cout<< node_out->inputs[2].node->name << std::endl; // beta
+        assert(node_out->inputs.size()==3);
+        node_quantizedFC->outputs.push_back(outentry);
+        node_out->inputs[0].node = node_quantizedFC; // data
+
       }
     }
   }
