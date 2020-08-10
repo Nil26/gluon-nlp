@@ -465,6 +465,16 @@ def _custompass_aft_quantization(sym, arg_params, aux_params):
     arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
     custom_sym = sym.optimize_for('pass_aft_quantization', arg_array, aux_params)
 
+    # dotproductselfattentioncell0_qkv_bias
+    logging.info('Dequantize dotproductselfattentioncell0_qkv_bias back to FP16 for CUTLASS fusion')
+    for name in custom_sym.list_arguments():
+        if name.endswith("dotproductselfattentioncell0_qkv_bias_quantize"):
+            val = mx.nd.contrib.dequantize(data=arg_array[name],
+                                            min_range=arg_array[name+"_min"],
+                                            max_range=arg_array[name+"_max"],
+                                            out_type="float32")
+            arg_array[name] = val.astype(np.float16)
+
     arg_array.pop('data0')
     arg_array.pop('data1')
     arg_array.pop('data2')
@@ -508,13 +518,19 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
                                                       ctx=ctx,
                                                       LayerOutputCollector=collector,
                                                       logger=logging,
-                                                      custom_pass_bef_quant=custom_pass_pre_quant,
-                                                      custom_pass_aft_quant=custom_pass_aft_quant)
+                                                      custom_pass_bef_quant=custom_pass_pre_quant)
         # save params
         ckpt_name = 'model_bert_{0}_quantized_{1}'.format(task_name, calib_mode)
         params_saved = os.path.join(output_dir, ckpt_name)
         net.export(params_saved, epoch=0)
         logging.info('Saving quantized model at %s', output_dir)
+        
+        #custom pass after quantization
+        if custom_pass_aft_quant is not None:
+            logging.info('Custom graph pass processing after quantization')
+            qsym, qarg_params, aux_params = mx.model.load_checkpoint(params_saved, 0)
+            qsym, qarg_params, aux_params = custom_pass_aft_quant(qsym, qarg_params, aux_params)       
+        mx.model.save_checkpoint(params_saved, 0, qsym, qarg_params, aux_params)
 
     if ctx==mx.gpu(args.gpu):
         del os.environ["MXNET_MKLDNN_ENABLED"]

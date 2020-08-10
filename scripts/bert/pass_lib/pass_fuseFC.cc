@@ -537,13 +537,6 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
       Node* node_quantizedFC = n;
       Node* node_elemwise_add = node_quantizedFC->outputs[0].node;
       if(node_elemwise_add->op.find(str_elemwise_add_op) != std::string::npos){
-
-        printf("FOUND!!!\n");
-        std::cout<< node_quantizedFC->name << std::endl;
-        std::cout<< node_elemwise_add->name << std::endl;
-        // printf("elemwise add inputs:\n");
-        // std::cout<< node_elemwise_add->inputs[0].node->name << std::endl; //quantized_FC
-        // std::cout<< node_elemwise_add->inputs[1].node->name << std::endl; // layernorm
         // the output of quantized_FC here (out prof and ffn2) even doesn't need out_min and out_max, only needs output results
 
         // subsitute node_quantizedFC to become the new fused node
@@ -556,9 +549,6 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
 
         // add the previous layernorm as an additional input into node_quantizedFC
         Node* node_layernorm_previous = node_elemwise_add->inputs[1].node;
-        printf("previous layernorm outputs:\n");
-        std::cout<< node_layernorm_previous->outputs[0].node->name << std::endl; // out_quantize
-        std::cout<< node_layernorm_previous->outputs[1].node->name << std::endl; // elemwise_add
         node_layernorm_previous->outputs[1].node = node_quantizedFC;
         auto entry_previous_layernorm = node_elemwise_add->inputs[1];
         node_quantizedFC->inputs.push_back(entry_previous_layernorm);
@@ -566,10 +556,6 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
         // make node_quantizedFC connect to the initial output of node_elemwise_add (named as node_out, actually is the next layernorm)
         auto outentry = node_elemwise_add->outputs[0];
         Node* node_out = outentry.node;
-        // printf("elemwise add outputs' input:\n");
-        // std::cout<< node_out->inputs[0].node->name << std::endl; //elemwise_add
-        // std::cout<< node_out->inputs[1].node->name << std::endl; // gamma
-        // std::cout<< node_out->inputs[2].node->name << std::endl; // beta
         assert(node_out->inputs.size()==3);
         node_quantizedFC->outputs.push_back(outentry);
         node_out->inputs[0].node = node_quantizedFC; // data
@@ -578,8 +564,23 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
     }
   }
 
+  //////////////// Change the rest of quantized_fc ops into CUTLASS fused quantized_fc ///////////////////
+  std::string str_qkv_proj_name = "dotproductselfattentioncell0_fullyconnected0";
+  //std::string str_quantizedFC_op = "_contrib_quantized_fully_connected";
+  for(Node* n : g.nodes){
+    if(n->name.find(str_qkv_proj_name) != std::string::npos && 
+        n->op.find(str_quantizedFC_op) != std::string::npos){
+      Node* node_qkv_quantizedFC = n;
+      std::cout << "FOUND!" << std::endl;
+      std::cout << node_qkv_quantizedFC->name << std::endl;
+      node_qkv_quantizedFC->op = "_contrib_quantized_fully_connected_cutlass";
+    }
+  }
+
   /////////////////////////////////////////////////////////////////
-  
+
+  /////////////////////////////////////////////////////////////////
+ 
   //gout.print();
 
   //convert back to JSON string from Graph/Node
