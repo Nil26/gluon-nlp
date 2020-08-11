@@ -453,7 +453,7 @@ def _custompass_before_quantization(sym, arg_params, aux_params):
 
     return custom_sym, arg_array, aux_params
 
-def _custompass_aft_quantization(sym, arg_params, aux_params):
+def _custompass_aft_quantization_cutlass(sym, arg_params, aux_params):
     """ add custom pass to the graph after quantization """
 
     seq_length = args.max_len
@@ -463,7 +463,7 @@ def _custompass_aft_quantization(sym, arg_params, aux_params):
     arg_array['data0'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
     arg_array['data1'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
     arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
-    custom_sym = sym.optimize_for('pass_aft_quantization', arg_array, aux_params)
+    custom_sym = sym.optimize_for('pass_aft_quantization_cutlass', arg_array, aux_params)
 
     logging.info('Dequantize quantizedFC bias back to FP16 for CUTLASS fusion')
     bias_tail = ('ffn_2_bias_quantize', 'qkv_bias_quantize','proj_bias_quantize')
@@ -474,6 +474,24 @@ def _custompass_aft_quantization(sym, arg_params, aux_params):
                                             max_range=arg_array[name+"_max"],
                                             out_type="float32")
             arg_array[name] = val.astype(np.float16)
+
+    arg_array.pop('data0')
+    arg_array.pop('data1')
+    arg_array.pop('data2')
+
+    return custom_sym, arg_array, aux_params
+
+def _custompass_aft_quantization_cublas(sym, arg_params, aux_params):
+    """ add custom pass to the graph after quantization """
+
+    seq_length = args.max_len
+    test_batch_size = args.dev_batch_size
+
+    arg_array = arg_params
+    arg_array['data0'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data1'] = mx.nd.ones((test_batch_size, seq_length), dtype='float32')
+    arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
+    custom_sym = sym.optimize_for('pass_aft_quantization_cublas', arg_array, aux_params)
 
     arg_array.pop('data0')
     arg_array.pop('data1')
@@ -506,7 +524,9 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
         custom_pass_aft_quant = None
         if args.custom_pass is not None:
             custom_pass_pre_quant = _custompass_before_quantization
-            custom_pass_aft_quant = _custompass_aft_quantization
+            # cublas OR cutlass
+            #custom_pass_aft_quant = _custompass_aft_quantization_cutlass
+            custom_pass_aft_quant = _custompass_aft_quantization_cublas
         net = mx.contrib.quantization.quantize_net_v2(net, quantized_dtype=quantized_dtype,
                                                       exclude_layers=[],
                                                       quantize_mode='smart',
