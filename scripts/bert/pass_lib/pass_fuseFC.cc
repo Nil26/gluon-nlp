@@ -530,56 +530,68 @@ MXReturnValue pass_aft_quantization(const std::string& in_graph, const std::stri
 
   /////////////////////////////////////////////////////////////////
 
-  //////////////// Fuse the quantized_fc + elemwise_add into one node ///////////////////
-  // there is a Dropout node between quantized_fc and elemwise_add (already picked out with the previous part)
+  //////////////// Change the rest of quantized_fc ops into CUTLASS fused quantized_fc ///////////////////
   for(Node* n : g.nodes){
     if(n->op.find(str_quantizedFC_op) != std::string::npos){
       Node* node_quantizedFC = n;
-      Node* node_elemwise_add = node_quantizedFC->outputs[0].node;
-      if(node_elemwise_add->op.find(str_elemwise_add_op) != std::string::npos){
-        // the output of quantized_FC here (out prof and ffn2) even doesn't need out_min and out_max, only needs output results
-
-        // subsitute node_quantizedFC to become the new fused node
-        node_quantizedFC->outputs.clear();
-        node_quantizedFC->op = "_contrib_quantized_fc_elemadd_fusion";
-        node_quantizedFC->attrs.erase("float_out");
-        node_quantizedFC->attrs.erase("no_bias");
-        // here determines the float type of the whole pipeline
-        node_quantizedFC->attrs["float_pipeline"]="float16";
-
-        // add the previous layernorm as an additional input into node_quantizedFC
-        Node* node_layernorm_previous = node_elemwise_add->inputs[1].node;
-        node_layernorm_previous->outputs[1].node = node_quantizedFC;
-        auto entry_previous_layernorm = node_elemwise_add->inputs[1];
-        node_quantizedFC->inputs.push_back(entry_previous_layernorm);
-
-        // make node_quantizedFC connect to the initial output of node_elemwise_add (named as node_out, actually is the next layernorm)
-        auto outentry = node_elemwise_add->outputs[0];
-        Node* node_out = outentry.node;
-        assert(node_out->inputs.size()==3);
-        node_quantizedFC->outputs.push_back(outentry);
-        node_out->inputs[0].node = node_quantizedFC; // data
-
+      if(n->name.find("ffn_2_fwd") != std::string::npos ||
+          n->name.find("dotproductselfattentioncell0_fullyconnected0") != std::string::npos ||
+          n->name.find("proj_fwd") != std::string::npos){
+       node_quantizedFC->op = "_contrib_quantized_fully_connected_cutlass"; 
       }
     }
   }
 
-  //////////////// Change the rest of quantized_fc ops into CUTLASS fused quantized_fc ///////////////////
-  std::string str_qkv_proj_name = "dotproductselfattentioncell0_fullyconnected0";
-  //std::string str_quantizedFC_op = "_contrib_quantized_fully_connected";
-  for(Node* n : g.nodes){
-    if(n->name.find(str_qkv_proj_name) != std::string::npos && 
-        n->op.find(str_quantizedFC_op) != std::string::npos){
-      Node* node_qkv_quantizedFC = n;
-      std::cout << "FOUND!" << std::endl;
-      std::cout << node_qkv_quantizedFC->name << std::endl;
-      node_qkv_quantizedFC->op = "_contrib_quantized_fully_connected_cutlass";
-    }
-  }
-
   /////////////////////////////////////////////////////////////////
 
-  /////////////////////////////////////////////////////////////////
+  // //////////////// Fuse the quantized_fc + elemwise_add into one node ///////////////////
+  // // there is a Dropout node between quantized_fc and elemwise_add (already picked out with the previous part)
+  // for(Node* n : g.nodes){
+  //   if(n->op.find(str_quantizedFC_op) != std::string::npos){
+  //     Node* node_quantizedFC = n;
+  //     Node* node_elemwise_add = node_quantizedFC->outputs[0].node;
+  //     if(node_elemwise_add->op.find(str_elemwise_add_op) != std::string::npos){
+  //       // the output of quantized_FC here (out prof and ffn2) even doesn't need out_min and out_max, only needs output results
+
+  //       // subsitute node_quantizedFC to become the new fused node
+  //       node_quantizedFC->outputs.clear();
+  //       node_quantizedFC->op = "_contrib_quantized_fc_elemadd_fusion";
+  //       node_quantizedFC->attrs.erase("float_out");
+  //       node_quantizedFC->attrs.erase("no_bias");
+  //       // here determines the float type of the whole pipeline
+  //       node_quantizedFC->attrs["float_pipeline"]="float16";
+
+  //       // add the previous layernorm as an additional input into node_quantizedFC
+  //       Node* node_layernorm_previous = node_elemwise_add->inputs[1].node;
+  //       node_layernorm_previous->outputs[1].node = node_quantizedFC;
+  //       auto entry_previous_layernorm = node_elemwise_add->inputs[1];
+  //       node_quantizedFC->inputs.push_back(entry_previous_layernorm);
+
+  //       // make node_quantizedFC connect to the initial output of node_elemwise_add (named as node_out, actually is the next layernorm)
+  //       auto outentry = node_elemwise_add->outputs[0];
+  //       Node* node_out = outentry.node;
+  //       assert(node_out->inputs.size()==3);
+  //       node_quantizedFC->outputs.push_back(outentry);
+  //       node_out->inputs[0].node = node_quantizedFC; // data
+
+  //     }
+  //   }
+  // }
+
+  // /////////////////////////////////////////////////////////////////
+
+
+  // //////////////// Change the rest of quantized_fc ops into CUTLASS fused quantized_fc ///////////////////
+  // std::string str_qkv_proj_name = "dotproductselfattentioncell0_fullyconnected0";
+  // for(Node* n : g.nodes){
+  //   if(n->name.find(str_qkv_proj_name) != std::string::npos && 
+  //       n->op.find(str_quantizedFC_op) != std::string::npos){
+  //     Node* node_qkv_quantizedFC = n;
+  //     node_qkv_quantizedFC->op = "_contrib_quantized_fully_connected_cutlass";
+  //   }
+  // }
+
+  // /////////////////////////////////////////////////////////////////
  
   //gout.print();
 

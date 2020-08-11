@@ -465,10 +465,10 @@ def _custompass_aft_quantization(sym, arg_params, aux_params):
     arg_array['data2'] = mx.nd.ones((test_batch_size, ), dtype='float32')
     custom_sym = sym.optimize_for('pass_aft_quantization', arg_array, aux_params)
 
-    # dotproductselfattentioncell0_qkv_bias
-    logging.info('Dequantize dotproductselfattentioncell0_qkv_bias back to FP16 for CUTLASS fusion')
+    logging.info('Dequantize quantizedFC bias back to FP16 for CUTLASS fusion')
+    bias_tail = ('ffn_2_bias_quantize', 'qkv_bias_quantize','proj_bias_quantize')
     for name in custom_sym.list_arguments():
-        if name.endswith("dotproductselfattentioncell0_qkv_bias_quantize"):
+        if name.endswith(bias_tail):
             val = mx.nd.contrib.dequantize(data=arg_array[name],
                                             min_range=arg_array[name+"_min"],
                                             max_range=arg_array[name+"_max"],
