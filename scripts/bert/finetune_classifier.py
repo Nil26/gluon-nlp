@@ -525,8 +525,8 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
         if args.custom_pass is not None:
             custom_pass_pre_quant = _custompass_before_quantization
             # cublas OR cutlass
-            #custom_pass_aft_quant = _custompass_aft_quantization_cutlass
-            custom_pass_aft_quant = _custompass_aft_quantization_cublas
+            custom_pass_aft_quant = _custompass_aft_quantization_cutlass
+            #custom_pass_aft_quant = _custompass_aft_quantization_cublas
         net = mx.contrib.quantization.quantize_net_v2(net, quantized_dtype=quantized_dtype,
                                                       exclude_layers=[],
                                                       quantize_mode='smart',
@@ -549,8 +549,9 @@ def calibration(net, dev_data_list, num_calib_batches, quantized_dtype, calib_mo
         if custom_pass_aft_quant is not None:
             logging.info('Custom graph pass processing after quantization')
             qsym, qarg_params, aux_params = mx.model.load_checkpoint(params_saved, 0)
-            qsym, qarg_params, aux_params = custom_pass_aft_quant(qsym, qarg_params, aux_params)       
-        mx.model.save_checkpoint(params_saved, 0, qsym, qarg_params, aux_params)
+            qsym, qarg_params, aux_params = custom_pass_aft_quant(qsym, qarg_params, aux_params)      
+            # save params
+            mx.model.save_checkpoint(params_saved, 0, qsym, qarg_params, aux_params)
 
     if ctx==mx.gpu(args.gpu):
         del os.environ["MXNET_MKLDNN_ENABLED"]
